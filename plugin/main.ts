@@ -1,10 +1,7 @@
 /* eslint-disable no-console */
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin } from "obsidian";
 import {
-  Auth,
   getAuth,
-  signInWithCustomToken,
-  signOut,
   Unsubscribe,
 } from "firebase/auth";
 import { FirebaseApp } from "firebase/app";
@@ -18,13 +15,15 @@ import {
 } from "firebase/database";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import app from "shared/firebase";
+import { WebhookSettingTab } from "./settingTab"; // Import the new class
 
-enum NewLineType {
+// Export NewLineType and MyPluginSettings for use in settingTab.ts
+export enum NewLineType {
   Windows = 1,
   UnixMac = 2,
 }
 
-interface MyPluginSettings {
+export interface MyPluginSettings {
   token: string;
   frequency: string;
   triggerOnLoad: boolean;
@@ -42,14 +41,14 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 export default class ObsidianWebhooksPlugin extends Plugin {
   settings: MyPluginSettings;
   firebase: FirebaseApp;
-  loggedIn: boolean;
+  // loggedIn: boolean; // This property was not used, consider removing if not needed elsewhere
   authUnsubscribe: Unsubscribe;
   valUnsubscribe: Unsubscribe;
 
   async onload() {
     console.log("loading plugin");
     await this.loadSettings();
-    this.firebase = app;
+    this.firebase = app; // Initialize Firebase app
     this.authUnsubscribe = getAuth(this.firebase).onAuthStateChanged((user) => {
       if (this.valUnsubscribe) {
         this.valUnsubscribe();
@@ -85,21 +84,20 @@ export default class ObsidianWebhooksPlugin extends Plugin {
         promiseChain = promiseChain.then(() => this.applyEvent(val));
       });
       await promiseChain;
-      await this.wipe(last);
-      promiseChain.catch((err) => {});
-
-      new Notice("notes updated by webhooks");
-    } catch (err) {
-      new Notice("error processing webhook events, " + err.toString());
-      throw err;
-    } finally {
+      if (last !== undefined) { // Ensure 'last' has a value before wiping
+        await this.wipe(last);
+      }
+      new Notice("Notes updated by webhooks");
+    } catch (err: any) {
+      new Notice(`Error processing webhook events: ${err.toString()}`);
+      console.error("Error processing webhook events:", err);
     }
   }
 
   async wipe(value: unknown) {
     const functions = getFunctions(this.firebase);
-    const wipe = httpsCallable(functions, "wipe");
-    await wipe(value);
+    const wipeCallable = httpsCallable(functions, "wipe");
+    await wipeCallable(value);
   }
 
   async applyEvent({
@@ -113,35 +111,83 @@ export default class ObsidianWebhooksPlugin extends Plugin {
     let path: string;
     if (typeof pathOrArr === "string") {
       path = pathOrArr;
+    } else if (Array.isArray(pathOrArr) && pathOrArr.length > 0) {
+      path = pathOrArr[0];
     } else {
-      path = Object.values(pathOrArr).first();
+      console.error("Path is not in expected format:", pathOrArr);
+      new Notice("Error applying event: Path is invalid.");
+      return;
     }
 
-    let dirPath = path.replace(/\/*$/, "").replace(/^(.+)\/[^\/]*?$/, "$1");
-    if (dirPath !== path) {
-      // == means its in the root
-      const exists = await fs.stat(dirPath);
-      if (!exists) {
-        await fs.mkdir(dirPath);
+    path = path.replace(/\/+$/, "");
+    if (!path) {
+      console.error("Path is empty after normalization.");
+      new Notice("Error applying event: Path cannot be empty.");
+      return;
+    }
+
+    const dirPathMatch = path.match(/^(.*)\//);
+    const dirPath = dirPathMatch ? dirPathMatch[1] : "";
+
+    if (dirPath && dirPath !== path) {
+      const dirExists = await fs.exists(dirPath, false);
+      if (!dirExists) {
+        try {
+          await fs.mkdir(dirPath);
+        } catch (e: any) {
+          console.error(`Failed to create directory ${dirPath}:`, e);
+          new Notice(`Error: Could not create directory ${dirPath}.`);
+          return;
+        }
       }
     }
-    let contentToSave = data;
-    if (this.settings.newLineType == NewLineType.UnixMac) {
-      contentToSave += "\n";
-    } else if (this.settings.newLineType == NewLineType.Windows) {
-      contentToSave += "\r\n";
+
+    let contentToAppend = data;
+    let contentPrefix = "";
+
+    if (this.settings.newLineType === NewLineType.UnixMac) {
+      contentPrefix = "\n";
+    } else if (this.settings.newLineType === NewLineType.Windows) {
+      contentPrefix = "\r\n";
     }
-    const pathStat = await fs.stat(path);
-    console.log("webhook updating path", path, pathStat);
-    if (pathStat?.type === "folder") {
-      throw new Error(
-        `path name exists as a folder. please delete folder: ${path}`
-      );
-    } else if (pathStat?.type == "file") {
-      const existingContent = await fs.read(path);
-      contentToSave = existingContent + contentToSave;
+
+    const fileExists = await fs.exists(path, false);
+    let finalContent: string;
+
+    if (fileExists) {
+        const pathStat = await fs.stat(path);
+        if (pathStat?.type === "folder") {
+            new Notice(`Error: Path ${path} exists as a folder. Please use a file path.`);
+            console.error(`Path name exists as a folder: ${path}`);
+            return;
+        }
+        const existingContent = await fs.read(path);
+        if (existingContent.length > 0 && contentPrefix) {
+            finalContent = existingContent + contentPrefix + contentToAppend;
+        } else if (existingContent.length > 0 && !contentPrefix) {
+            finalContent = existingContent + "\n" + contentToAppend;
+        } else {
+            finalContent = existingContent + contentToAppend;
+        }
+    } else {
+      let suffix = "";
+      if (this.settings.newLineType === NewLineType.UnixMac) {
+        suffix = "\n";
+      } else if (this.settings.newLineType === NewLineType.Windows) {
+        suffix = "\r\n";
+      }
+      // For new files, only add suffix if a specific newline type is chosen.
+      // If 'none' is chosen, the raw data is written.
+      // If a newline type IS chosen, the data is written followed by that newline.
+      finalContent = contentToAppend + (this.settings.newLineType !== undefined ? suffix : "");
     }
-    await fs.write(path, contentToSave);
+
+    try {
+      await fs.write(path, finalContent);
+    } catch (e: any) {
+      console.error(`Failed to write to file ${path}:`, e);
+      new Notice(`Error: Could not write to file ${path}.`);
+    }
   }
 
   onunload() {
@@ -160,130 +206,5 @@ export default class ObsidianWebhooksPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
-  }
-}
-
-class WebhookSettingTab extends PluginSettingTab {
-  plugin: ObsidianWebhooksPlugin;
-  auth: Auth;
-  authObserver: Unsubscribe;
-
-  constructor(oApp: App, plugin: ObsidianWebhooksPlugin) {
-    super(oApp, plugin);
-    this.plugin = plugin;
-    this.auth = getAuth(this.plugin.firebase);
-    this.authObserver = this.auth.onAuthStateChanged(this.display);
-  }
-
-  hide(): void {
-    this.authObserver();
-  }
-
-  display(): void {
-    if (!this) {
-      return;
-    }
-
-    let { containerEl } = this;
-
-    containerEl.empty();
-
-    containerEl.createEl("h2", { text: "Settings for webhooks" });
-    containerEl
-      .createEl("p", { text: "Generate login tokens at " })
-      .createEl("a", {
-        text: "Obsidian Webhooks",
-        href: "https://obsidian-buffer.web.app",
-      });
-
-    if (this.plugin.settings.error) {
-      containerEl.createEl("p", {
-        text: `error: ${this.plugin.settings.error}`,
-      });
-    }
-
-    if (this.auth.currentUser) {
-      new Setting(containerEl)
-        .setName(`logged in as ${this.auth.currentUser.email}`)
-        .addButton((button) => {
-          button
-            .setButtonText("Logout")
-            .setCta()
-            .onClick(async (evt) => {
-              try {
-                await signOut(this.auth);
-                this.plugin.settings.error = undefined;
-              } catch (err) {
-                this.plugin.settings.error = err.message;
-              } finally {
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            });
-        });
-      new Setting(containerEl)
-        .setName("New Line")
-        .setDesc("Add new lines between incoming notes")
-        .addDropdown((dropdown) => {
-          dropdown.addOption("none", "No new lines");
-          dropdown.addOption("windows", "Windows style newlines");
-          dropdown.addOption("unixMac", "Linux, Unix or Mac style new lines");
-          const { newLineType } = this.plugin.settings;
-          if (newLineType === undefined) {
-            dropdown.setValue("none");
-          } else if (newLineType == NewLineType.Windows) {
-            dropdown.setValue("windows");
-          } else if (newLineType == NewLineType.UnixMac) {
-            dropdown.setValue("unixMac");
-          }
-          dropdown.onChange(async (value) => {
-            if (value == "none") {
-              this.plugin.settings.newLineType = undefined;
-            } else if (value == "windows") {
-              this.plugin.settings.newLineType = NewLineType.Windows;
-            } else if (value == "unixMac") {
-              this.plugin.settings.newLineType = NewLineType.UnixMac;
-            }
-            await this.plugin.saveSettings();
-            this.display();
-          });
-        });
-      return;
-    }
-
-    new Setting(containerEl).setName("Webhook login token").addText((text) =>
-      text
-        .setPlaceholder("Paste your token")
-        .setValue(this.plugin.settings.token)
-        .onChange(async (value) => {
-          console.log("Secret: " + value);
-          this.plugin.settings.token = value;
-          await this.plugin.saveSettings();
-        })
-    );
-
-    new Setting(containerEl)
-      .setName("Login")
-      .setDesc("Exchanges webhook token for authenication")
-      .addButton((button) => {
-        button
-          .setButtonText("Login")
-          .setCta()
-          .onClick(async (evt) => {
-            try {
-              await signInWithCustomToken(
-                this.auth,
-                this.plugin.settings.token
-              );
-              this.plugin.settings.token = "";
-              this.plugin.settings.error = undefined;
-            } catch (err) {
-              this.plugin.settings.error = err.message;
-            } finally {
-              await this.plugin.saveSettings();
-              this.display();
-            }
-          });
-      });
   }
 }
