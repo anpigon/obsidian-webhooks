@@ -7,8 +7,8 @@ export class WebhookSettingTab extends PluginSettingTab {
   auth: Auth;
   authObserver: Unsubscribe;
 
-  constructor(oApp: App, plugin: ObsidianWebhooksPlugin) {
-    super(oApp, plugin);
+  constructor(app: App, plugin: ObsidianWebhooksPlugin) {
+    super(app, plugin);
     this.plugin = plugin;
     this.auth = getAuth(this.plugin.firebase);
     this.authObserver = this.auth.onAuthStateChanged(() => this.display()); // Simplified display call
@@ -21,10 +21,6 @@ export class WebhookSettingTab extends PluginSettingTab {
   }
 
   display(): void {
-    // if (!this) { // This check is generally not needed within a class method
-    //   return;
-    // }
-
     let { containerEl } = this;
     containerEl.empty();
 
