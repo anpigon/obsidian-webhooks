@@ -67,9 +67,14 @@ export class FirebaseService {
   }
 
   public async wipeData(value: unknown): Promise<void> {
-    const functions = getFunctions(this.firebaseApp);
-    const wipeCallable = httpsCallable(functions, "wipe");
-    await wipeCallable(value);
+    try {
+      const functions = getFunctions(this.firebaseApp);
+      const wipeCallable = httpsCallable(functions, "wipe");
+      await wipeCallable(value);
+    } catch (error) {
+      console.error("Failed to wipe data:", error);
+      throw error; // Re-throw to let the caller handle it
+    }
   }
 
   public cleanupListeners(): void {
