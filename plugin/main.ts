@@ -30,6 +30,7 @@ export default class ObsidianWebhooksPlugin extends Plugin {
   private firebaseService: FirebaseService;
 
   async onload() {
+    // eslint-disable-next-line no-console
     console.log("loading plugin");
     await this.loadSettings();
 
@@ -76,6 +77,7 @@ export default class ObsidianWebhooksPlugin extends Plugin {
       new Notice("Notes updated by webhooks");
     } catch (err: any) {
       new Notice(`Error processing webhook events: ${err.toString()}`);
+      // eslint-disable-next-line no-console
       console.error("Error processing webhook events:", err);
     }
   }
@@ -98,20 +100,27 @@ export default class ObsidianWebhooksPlugin extends Plugin {
     } else if (Array.isArray(pathOrArr) && pathOrArr.length > 0) {
       path = pathOrArr[0];
     } else {
+      // eslint-disable-next-line no-console
       console.error("Path is not in expected format:", pathOrArr);
       new Notice("Error applying event: Path is invalid.");
       return;
     }
 
-    path = path.replace(/\/+$/, "");
+    path = this.app.vault.adapter.normalizePath(path); // Normalize path using Obsidian API
     if (!path) {
+      // eslint-disable-next-line no-console
       console.error("Path is empty after normalization.");
       new Notice("Error applying event: Path cannot be empty.");
       return;
     }
 
-    const dirPathMatch = path.match(/^(.*)\//);
-    const dirPath = dirPathMatch ? dirPathMatch[1] : "";
+    // Extract directory path using Obsidian's recommended way or a robust method
+    // For example, if normalizePath ensures no trailing slash for files,
+    // and paths are always absolute or relative to vault root.
+    // A simple approach for directory extraction, assuming 'path' is a file path:
+    const lastSlashIndex = path.lastIndexOf('/');
+    const dirPath = lastSlashIndex > 0 ? path.substring(0, lastSlashIndex) : "";
+
 
     if (dirPath && dirPath !== path) {
       const dirExists = await fs.exists(dirPath, false);
@@ -119,6 +128,7 @@ export default class ObsidianWebhooksPlugin extends Plugin {
         try {
           await fs.mkdir(dirPath);
         } catch (e: any) {
+          // eslint-disable-next-line no-console
           console.error(`Failed to create directory ${dirPath}:`, e);
           new Notice(`Error: Could not create directory ${dirPath}.`);
           return;
@@ -142,6 +152,7 @@ export default class ObsidianWebhooksPlugin extends Plugin {
         const pathStat = await fs.stat(path);
         if (pathStat?.type === "folder") {
             new Notice(`Error: Path ${path} exists as a folder. Please use a file path.`);
+            // eslint-disable-next-line no-console
             console.error(`Path name exists as a folder: ${path}`);
             return;
         }
@@ -169,12 +180,14 @@ export default class ObsidianWebhooksPlugin extends Plugin {
     try {
       await fs.write(path, finalContent);
     } catch (e: any) {
+      // eslint-disable-next-line no-console
       console.error(`Failed to write to file ${path}:`, e);
       new Notice(`Error: Could not write to file ${path}.`);
     }
   }
 
   onunload() {
+    // eslint-disable-next-line no-console
     console.log("unloading plugin");
     if (this.firebaseService) {
       this.firebaseService.cleanupListeners();
