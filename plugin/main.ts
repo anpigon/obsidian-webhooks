@@ -1,21 +1,8 @@
-/* eslint-disable no-console */
-import { App, Notice, Plugin } from "obsidian";
-import {
-  getAuth,
-  Unsubscribe,
-} from "firebase/auth";
-import { FirebaseApp } from "firebase/app";
-import {
-  DataSnapshot,
-  getDatabase,
-  goOffline,
-  goOnline,
-  onValue,
-  ref,
-} from "firebase/database";
-import { getFunctions, httpsCallable } from "firebase/functions";
-import app from "shared/firebase";
-import { WebhookSettingTab } from "./settingTab"; // Import the new class
+import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { DataSnapshot } from "firebase/database"; // Only DataSnapshot might be needed directly by the plugin
+import { User } from "firebase/auth"; // For type hinting
+import { FirebaseService, FirebaseServiceHooks } from "./firebaseService";
+import { WebhookSettingTab } from "./settingTab";
 
 // Export NewLineType and MyPluginSettings for use in settingTab.ts
 export enum NewLineType {
@@ -25,52 +12,51 @@ export enum NewLineType {
 
 export interface MyPluginSettings {
   token: string;
-  frequency: string;
+  frequency: string; // Represents scheduling frequency, "0" for manual. Future versions might use cron-like strings or specific keywords.
   triggerOnLoad: boolean;
   error?: string;
-  newLineType?: NewLineType;
+  newLineType?: NewLineType; // User's preferred new line character type
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
   token: "",
   frequency: "0", // manual by default
   triggerOnLoad: true,
-  newLineType: undefined,
+  newLineType: undefined, // Defaults to Obsidian's standard new line handling
 };
 
 export default class ObsidianWebhooksPlugin extends Plugin {
   settings: MyPluginSettings;
-  firebase: FirebaseApp;
-  // loggedIn: boolean; // This property was not used, consider removing if not needed elsewhere
-  authUnsubscribe: Unsubscribe;
-  valUnsubscribe: Unsubscribe;
+  private firebaseService: FirebaseService;
 
   async onload() {
     console.log("loading plugin");
     await this.loadSettings();
-    this.firebase = app; // Initialize Firebase app
-    this.authUnsubscribe = getAuth(this.firebase).onAuthStateChanged((user) => {
-      if (this.valUnsubscribe) {
-        this.valUnsubscribe();
-      }
-      if (user) {
-        const db = getDatabase(this.firebase);
-        const buffer = ref(db, `buffer/${user.uid}`);
-        this.valUnsubscribe = onValue(buffer, async (data) => {
-          try {
-            await goOffline(db);
-            await this.onBufferChange(data);
-          } finally {
-            await goOnline(db);
-          }
-        });
-      }
-    });
+
+    const firebaseHooks: FirebaseServiceHooks = {
+      onAuthStateChanged: (user: User | null) => {
+        // This logic remains in the plugin as it directly impacts plugin state/UI
+        // If the FirebaseService handled buffer listener internally based on auth state,
+        // this callback might become simpler or not needed here.
+        // For now, we explicitly manage buffer listener from here based on user.
+        if (!user) {
+            // User logged out or not logged in initially
+            // The service should internally clean up the buffer listener if user is null
+        }
+      },
+      onBufferChange: async (data: DataSnapshot) => {
+        await this.handleBufferChange(data);
+      },
+    };
+
+    this.firebaseService = new FirebaseService(firebaseHooks);
+    this.firebaseService.initializeAuthListener();
 
     this.addSettingTab(new WebhookSettingTab(this.app, this));
   }
 
-  async onBufferChange(data: DataSnapshot) {
+  // Renamed from onBufferChange to avoid confusion with the hook name
+  async handleBufferChange(data: DataSnapshot) {
     if (!data.hasChildren()) {
       return;
     }
@@ -95,9 +81,7 @@ export default class ObsidianWebhooksPlugin extends Plugin {
   }
 
   async wipe(value: unknown) {
-    const functions = getFunctions(this.firebase);
-    const wipeCallable = httpsCallable(functions, "wipe");
-    await wipeCallable(value);
+    await this.firebaseService.wipeData(value);
   }
 
   async applyEvent({
@@ -192,11 +176,8 @@ export default class ObsidianWebhooksPlugin extends Plugin {
 
   onunload() {
     console.log("unloading plugin");
-    if (this.authUnsubscribe) {
-      this.authUnsubscribe();
-    }
-    if (this.valUnsubscribe) {
-      this.valUnsubscribe();
+    if (this.firebaseService) {
+      this.firebaseService.cleanupListeners();
     }
   }
 

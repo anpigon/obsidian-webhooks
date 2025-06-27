@@ -1,1 +1,10 @@
-../manifest.json
+{
+	"id": "obsidian-webhooks",
+	"name": "Webhook Plugin",
+	"version": "0.0.6",
+	"minAppVersion": "0.9.12",
+	"description": "Capture ideas and automate your Obsidian notes from external services like IFTTT, Zapier, or custom webhooks. Append content to specific notes based on incoming webhook data.",
+	"author": "Stephen Solka",
+	"authorUrl": "https://obsidian-buffer.web.app",
+	"isDesktopOnly": false
+}
